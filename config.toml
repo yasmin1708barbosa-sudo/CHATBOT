@@ -1,0 +1,11 @@
+# Identidade visual do NutriBot (paleta e tipografia documentadas em ENTREGA.md)
+[theme]
+base = "light"
+primaryColor = "#2E7D4F"
+backgroundColor = "#FAF6EE"
+secondaryBackgroundColor = "#EFE7D8"
+textColor = "#1F3D2B"
+borderColor = "#DDD3C0"
+linkColor = "#2E7D4F"
+font = "Nunito Sans:https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700&display=swap, sans-serif"
+headingFont = "Fraunces:https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&display=swap, serif"

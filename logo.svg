@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="NutriBot">
+  <!-- balão de conversa (o bot) -->
+  <path fill="#2E7D4F" d="M32 4C49 4 60 15 60 31C60 47 48 58 32 58C26 58 21 57 17 55L6 60L9 49C6 44 4 38 4 31C4 15 15 4 32 4Z"/>
+  <!-- folha (alimentação natural) -->
+  <path fill="#FAF6EE" d="M18 46C18 30 30 18 46 18C46 34 34 46 18 46Z"/>
+  <path stroke="#2E7D4F" stroke-width="2.5" stroke-linecap="round" fill="none" d="M20 44L40 24"/>
+  <!-- fruta (cor de destaque) -->
+  <circle fill="#E8743B" cx="47" cy="45" r="4.5"/>
+</svg>
