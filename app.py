@@ -5,7 +5,8 @@ O sistema:
   1. conversa sobre alimentação, hidratação, sono, atividade física e bem-estar;
   2. faz uma avaliação rápida dos hábitos do usuário e dá uma nota de 0 a 100;
   3. calcula o IMC;
-  4. gera um relatório completo em Word (.docx) com o resultado e as dicas.
+  4. gera um relatório completo em Word (.docx) com o resultado e as dicas;
+  5. responde calorias e nutrientes de 597 alimentos da tabela TACO (dados/taco.csv).
 
 Como rodar:
     pip install -r requirements.txt
@@ -16,11 +17,15 @@ para a População Brasileira (Ministério da Saúde) e em recomendações da OM
 Não substituem a avaliação de um nutricionista ou médico.
 """
 
+import base64
+import csv
+import html
 import io
 import random
 import re
 import unicodedata
 from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 from docx import Document
@@ -66,6 +71,7 @@ TEMAS = {
             "- 🏃 **exercício** físico\n"
             "- 🧘 **estresse** e saúde mental\n"
             "- 📏 **IMC** (calculo pra você!)\n"
+            "- 🥄 **calorias e nutrientes** de 597 alimentos (tabela TACO), ex.: *calorias da banana*\n"
             "- 💡 **dica** do dia\n"
             "- 📋 **avaliação** dos seus hábitos e **relatório** em Word (veja as abas acima!)\n\n"
             "É só escrever uma dessas palavras ou fazer uma pergunta!"
@@ -254,6 +260,85 @@ def tentar_calcular_imc(texto: str):
 
 
 # ----------------------------------------------------------------------
+# Tabela TACO (NEPA/Unicamp, 4ª ed.): composição de 597 alimentos por 100 g
+# ----------------------------------------------------------------------
+BASE = Path(__file__).parent
+# Gatilhos fortes: sem alimento reconhecido, o bot pede o nome do alimento.
+GATILHOS_TACO_FORTES = ["caloria", "kcal", "taco", "nutricional", "nutriente", "composicao"]
+# Gatilhos fracos: sem alimento reconhecido, a pergunta segue para os temas (ex.: "sodio" -> sal).
+GATILHOS_TACO = GATILHOS_TACO_FORTES + ["proteina", "carboidrato", "gordura", "lipideo", "fibra", "sodio"]
+IGNORAR_TACO = {
+    "quanta", "quanto", "tem", "qual", "quai", "sao", "uma", "pra", "para", "por", "com", "sem",
+    "gramas", "grama", "porcao", "valor", "tabela", "informacao", "contem", "possui", "existe",
+    "caloria", "kcal", "taco", "nutricional", "nutriente", "composicao",
+    "proteina", "carboidrato", "gordura", "lipideo", "fibra", "sodio",
+}
+
+
+def singular(palavra: str) -> str:
+    return palavra[:-1] if palavra.endswith("s") and len(palavra) > 3 else palavra
+
+
+@st.cache_data
+def carregar_taco():
+    with open(BASE / "dados" / "taco.csv", encoding="utf-8") as f:
+        alimentos = list(csv.DictReader(f))
+    for a in alimentos:
+        palavras = [singular(p) for p in re.findall(r"[a-z]+", normalizar(a["alimento"]))]
+        a["palavras"], a["primeira"] = set(palavras), palavras[0]
+        a["preferido"] = sum(p.startswith("cozid") or p == "inteiro" for p in palavras)
+    return alimentos
+
+
+def buscar_alimento(texto: str) -> list:
+    """Alimentos da TACO que batem com a mensagem, do mais provável ao menos provável."""
+    termos = {singular(p) for p in re.findall(r"[a-z]+", texto) if len(p) > 2} - IGNORAR_TACO
+    achados = []
+    for a in carregar_taco():
+        acertos = len(termos & a["palavras"])
+        if acertos:
+            # nome começando pelo termo vale mais; empate: versão cozida/inteira (como se come), depois nome mais curto
+            achados.append((acertos + (a["primeira"] in termos), a["preferido"], -len(a["alimento"]), a))
+    achados.sort(key=lambda x: x[:3], reverse=True)
+    return [x[-1] for x in achados]
+
+
+def formatar_nutriente(valor: str, unidade: str) -> str:
+    if valor == "Tr":
+        return "traços"
+    if not valor:
+        return "não analisado"
+    return f"{valor.replace('.', ',')} {unidade}"
+
+
+def responder_taco(texto: str):
+    """Resposta com dados da TACO, ou None se a mensagem não for sobre nutrientes de um alimento."""
+    if not any(g in texto for g in GATILHOS_TACO):
+        return None
+    achados = buscar_alimento(texto)
+    if not achados:
+        if any(g in texto for g in GATILHOS_TACO_FORTES):
+            return ("🔎 Não achei esse alimento na tabela TACO. Tente o nome simples, "
+                    "ex.: **calorias da banana** ou **proteína do feijão**.")
+        return None
+    a = achados[0]
+    linhas = [
+        f"🥄 **{a['alimento']}** — por 100 g · *{a['grupo']}*\n",
+        f"- Energia: **{formatar_nutriente(a['energia_kcal'], 'kcal')}**",
+        f"- Proteína: {formatar_nutriente(a['proteina_g'], 'g')}",
+        f"- Carboidrato: {formatar_nutriente(a['carboidrato_g'], 'g')}",
+        f"- Gorduras (lipídeos): {formatar_nutriente(a['lipideos_g'], 'g')}",
+        f"- Fibra: {formatar_nutriente(a['fibra_g'], 'g')}",
+        f"- Sódio: {formatar_nutriente(a['sodio_mg'], 'mg')}",
+    ]
+    outras = [o["alimento"] for o in achados[1:4]]
+    if outras:
+        linhas.append(f"\nOutras opções na tabela: {' · '.join(outras)}")
+    linhas.append("\n*Fonte: Tabela Brasileira de Composição de Alimentos (TACO), 4ª ed., NEPA/Unicamp.*")
+    return "\n".join(linhas)
+
+
+# ----------------------------------------------------------------------
 # Lógica principal do chatbot
 # ----------------------------------------------------------------------
 def responder(mensagem: str) -> str:
@@ -266,6 +351,10 @@ def responder(mensagem: str) -> str:
             "📋 Na aba **Avaliação de hábitos** você responde 7 perguntas rápidas e recebe uma nota de 0 a 100. "
             "Depois, na aba **Relatório**, dá pra baixar tudo em Word, com as dicas personalizadas!"
         )
+
+    resposta_taco = responder_taco(texto)
+    if resposta_taco:
+        return resposta_taco
 
     # IMC: se a pessoa falou de IMC ou mandou peso + altura
     if "imc" in texto or "massa corporal" in texto or ("kg" in texto and ("m" in texto or "cm" in texto)):
@@ -426,7 +515,7 @@ def calcular_imc(peso: float, altura: float):
 # ----------------------------------------------------------------------
 # Relatório em Word
 # ----------------------------------------------------------------------
-VERDE = RGBColor(0x2E, 0x7D, 0x32)
+VERDE = RGBColor(0x2E, 0x7D, 0x4F)  # verde-folha da paleta
 
 
 def gerar_relatorio_docx(nome: str, resultado: dict, imc, historico: list) -> bytes:
@@ -506,19 +595,29 @@ def gerar_relatorio_docx(nome: str, resultado: dict, imc, historico: list) -> by
 # ----------------------------------------------------------------------
 # Interface (Streamlit)
 # ----------------------------------------------------------------------
+LOGO = str(BASE / "assets" / "logo.svg")
+LOGO_URI = "data:image/svg+xml;base64," + base64.b64encode(Path(LOGO).read_bytes()).decode()
+
 CSS = """
 <style>
-.block-container {padding-top: 2rem; max-width: 1000px;}
-.nb-header {display:flex; justify-content:space-between; align-items:center;
-            border-bottom:1px solid #2a3240; padding-bottom:.6rem; margin-bottom:1rem;}
-.nb-titulo {font-size:1.6rem; font-weight:700;}
-.nb-sub {color:#9aa4b2; font-size:.95rem;}
-.nb-badge {background:#163a22; color:#4ade80; border:1px solid #2f6f45;
-           padding:.2rem .6rem; border-radius:999px; font-size:.75rem;}
-.nb-card {background:#161b22; border:1px solid #2a3240; border-radius:10px;
+.block-container {padding-top: 4.5rem; max-width: 1000px;}
+@media (max-width: 640px) { .nb-badge {display:none;} }
+.nb-header {display:flex; align-items:center; gap:.9rem;
+            border-bottom:1px solid #DDD3C0; padding-bottom:.8rem; margin-bottom:1rem;}
+.nb-header img {width:52px; height:52px;}
+.nb-titulo {font-family:Fraunces, serif; font-size:1.9rem; font-weight:700; line-height:1.1; color:#1F3D2B;}
+.nb-titulo span {color:#2E7D4F;}
+.nb-sub {color:#5B6B60; font-size:.95rem;}
+.nb-badge {margin-left:auto; background:#FBE3D4; color:#9A4416; border:1px solid #F2C3A6;
+           padding:.2rem .6rem; border-radius:999px; font-size:.75rem; white-space:nowrap;}
+.nb-card {background:#FFFDF8; border:1px solid #DDD3C0; border-radius:12px;
           padding:1rem 1.2rem; margin-bottom:.8rem;}
-.nb-nota {font-size:3rem; font-weight:800; color:#4ade80; line-height:1;}
-.nb-rodape {color:#6b7280; font-size:.8rem; text-align:center; margin-top:2rem;}
+.nb-nota {font-family:Fraunces, serif; font-size:3rem; font-weight:700; color:#2E7D4F; line-height:1;
+          font-variant-numeric:tabular-nums;}
+.nb-cor {display:inline-block; width:1.1em; height:1.1em; border-radius:4px; vertical-align:middle;
+         border:1px solid #00000022;}
+.nb-rodape {color:#6B776F; font-size:.8rem; text-align:center; margin-top:2rem;}
+::selection {background:#2E7D4F; color:#FAF6EE;}
 </style>
 """
 
@@ -542,7 +641,7 @@ def carregar_exemplo():
 
 def aba_chat():
     st.markdown("Converse comigo sobre **alimentação, hidratação, sono, exercícios e bem-estar**.")
-    exemplos = ["ajuda", "quanto de água devo beber?", "ideias de lanche", "como dormir melhor?", "imc 70 kg 1,75 m"]
+    exemplos = ["ajuda", "quanto de água devo beber?", "calorias do feijão", "como dormir melhor?", "imc 70 kg 1,75 m"]
     colunas = st.columns(len(exemplos))
     clicado = None
     for col, ex in zip(colunas, exemplos):
@@ -550,7 +649,7 @@ def aba_chat():
             clicado = ex
 
     for msg in st.session_state.mensagens:
-        with st.chat_message(msg["role"], avatar="🥗" if msg["role"] == "assistant" else "🙂"):
+        with st.chat_message(msg["role"], avatar=LOGO if msg["role"] == "assistant" else None):
             st.markdown(msg["content"])
 
     pergunta = st.chat_input("Pergunte sobre alimentação ou qualidade de vida...") or clicado
@@ -617,7 +716,7 @@ def aba_relatorio():
     historico = st.session_state.mensagens if incluir_chat else []
 
     texto_imc = f"{imc['valor']} ({imc['classe']})" if imc else "não informado"
-    st.markdown(f"<div class='nb-card'><b>Resumo</b><br>Nome: {st.session_state.in_nome or 'Não informado'}<br>"
+    st.markdown(f"<div class='nb-card'><b>Resumo</b><br>Nome: {html.escape(st.session_state.in_nome) or 'Não informado'}<br>"
                 f"Nota: <b>{res['pontuacao']}/100</b><br>IMC: {texto_imc}<br>"
                 f"Mensagens na conversa: {len(historico)}</div>", unsafe_allow_html=True)
 
@@ -628,61 +727,46 @@ def aba_relatorio():
                        use_container_width=True)
 
 
-def aba_sobre():
-    st.markdown(
-        """
-### Sobre o NutriBot
-O **NutriBot** é um chatbot que incentiva hábitos de **alimentação saudável e qualidade de vida**.
-
-**O que ele faz**
-- 💬 Responde dúvidas sobre alimentação, hidratação, sono, exercícios e estresse
-- 📋 Avalia 7 hábitos do dia a dia e dá uma nota de 0 a 100
-- 📏 Calcula o IMC
-- 📄 Gera um relatório em Word com dicas personalizadas
-
-**Como funciona**
-O chatbot usa **processamento de linguagem natural baseado em regras**: o texto é normalizado
-(minúsculas e sem acentos) e comparado com palavras-chave de cada tema. O tema com mais
-correspondências define a resposta.
-
-**Fontes**
-- Guia Alimentar para a População Brasileira — Ministério da Saúde
-- Recomendações da Organização Mundial da Saúde (OMS) sobre atividade física, sal e frutas/verduras
-
-⚠️ *As informações são educativas e não substituem um nutricionista ou médico.*
-        """
-    )
+def aba_projeto():
+    # O documento de entrega é a fonte única; o logo vira data URI porque o Streamlit não serve arquivos locais.
+    texto = (BASE / "ENTREGA.md").read_text(encoding="utf-8").replace("assets/logo.svg", LOGO_URI)
+    st.markdown(texto, unsafe_allow_html=True)
 
 
 def main():
-    st.set_page_config(page_title="NutriBot - Alimentação Saudável", page_icon="🥗", layout="wide")
+    st.set_page_config(page_title="NutriBot - Alimentação Saudável", page_icon=LOGO, layout="wide")
     st.markdown(CSS, unsafe_allow_html=True)
     iniciar_estado()
 
     st.markdown(
-        "<div class='nb-header'><div><div class='nb-titulo'>🥗 NutriBot</div>"
+        f"<div class='nb-header'><img src='{LOGO_URI}' alt=''>"
+        "<div><div class='nb-titulo'>Nutri<span>Bot</span></div>"
         "<div class='nb-sub'>Chatbot de alimentação saudável e qualidade de vida</div></div>"
-        "<span class='nb-badge'>v1.0 · protótipo</span></div>",
+        "<span class='nb-badge'>v1.1 · protótipo</span></div>",
         unsafe_allow_html=True,
     )
 
     with st.sidebar:
-        st.header("🥗 NutriBot")
+        st.image(LOGO, width=56)
+        st.header("NutriBot")
         st.write("Dicas de alimentação, sono, atividade física e bem-estar.")
         st.warning("⚠️ Informações educativas. Não substituem nutricionista ou médico.")
         if st.button("🗑️ Limpar conversa", use_container_width=True):
             st.session_state.mensagens = [{"role": "assistant", "content": TEMAS["saudacao"]["respostas"][0]}]
             st.rerun()
 
-    chat, avaliacao, relatorio, sobre = st.tabs(["💬 Chat", "📋 Avaliação de hábitos", "📄 Relatório", "ℹ️ Sobre"])
+    chat, avaliacao, relatorio, projeto = st.tabs([
+        ":material/chat: Chat", ":material/checklist: Avaliação de hábitos",
+        ":material/description: Relatório", ":material/info: Projeto",
+    ])
     with chat:
         aba_chat()
     with avaliacao:
         aba_avaliacao()
     with relatorio:
         aba_relatorio()
-    with sobre:
-        aba_sobre()
+    with projeto:
+        aba_projeto()
 
     st.markdown("<div class='nb-rodape'>FMU · Tecnologia em Inteligência Artificial · NutriBot</div>",
                 unsafe_allow_html=True)
